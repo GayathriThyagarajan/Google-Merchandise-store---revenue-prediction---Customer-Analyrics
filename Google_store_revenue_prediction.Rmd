@@ -1,0 +1,113 @@
+```{r}
+library(readr)
+library(dplyr)
+library(randomForest)
+library(ggplot2)
+library(Hmisc)
+library(party)
+library(MLmetrics)
+library(xgboost)
+library(readr)
+library(stringr)
+library(caret)
+library(devtools)
+library(mlr)
+library(parallel)
+library(parallelMap)
+
+library(tidyverse)
+library(jsonlite)
+library(scales)
+library(lubridate)
+library(repr)
+library(ggrepel)
+library(gridExtra)
+library(dplyr)
+library(onehot)
+library(glmnet)
+library(Metrics)
+library(splitstackshape)
+```
+
+```{r}
+#read dataset
+data <- read.csv("train_new.csv")
+
+set.seed(123)
+
+#splitting dataset
+smp_size <- floor(0.75 * nrow(data))
+train_ind <- sample(seq_len(nrow(data)), size = smp_size)
+
+# stratified split to generate train and test sets
+train <- stratified(data, "logPrediction", .75)
+test <-  stratified(data, "logPrediction", .25)
+
+# generating training and test sets
+train <- data[train_ind, ]
+test <- data[-train_ind, ]
+
+```
+
+```{r}
+#one hot encoding
+encoder_train <- onehot(train,max_levels = 300)
+encoder_test <- onehot(test,max_levels = 300)
+
+x_train <- predict(encoder_train, train)
+x_test <- predict(encoder_test, test)
+
+#converting list to data frame
+x_train <- as.data.frame(x_train)
+x_test <- as.data.frame(x_test)
+
+set.seed(123)
+
+#change column names to R format
+colnames(x_train) <- make.names(colnames(x_train),unique = T)
+colnames(x_test) <- make.names(colnames(x_test),unique = T)
+
+#extract label from the training set
+label_train <- x_train$logPrediction
+
+#formulate learning curve - specify max size of training set
+learncurve <- data.frame(m = integer(21), trainRMSE = integer(21) , cvRMSE = integer(21))
+
+#extract label from test set
+testY <- x_test$logPrediction
+
+#training method
+trainControl <- trainControl(method = "repeatedCV" , number = 10 , repeats = 3)
+
+#generating training curve
+for(i in 3:21)
+{
+  learncurve$m[i] <- i
+  xgbFit = xgboost(data = as.matrix(x_train[, -361]), nfold = 5, label = x_train[,361], 
+    nrounds = 100, verbose = FALSE, objective = "reg:linear", eval_metric = "rmse", 
+    nthread = 8, eta = 0.01, gamma = 0.0468, max_depth = 6, min_child_weight = 1.7817, 
+    subsample = 0.5213, colsample_bytree = 0.4603)
+
+  learncurve$trainRMSE[i] <- xgbFit$evaluation_log$train_rmse
+  
+  predicted <- predict(xgbFit,newdata = xgb.DMatrix(as.matrix(x_test[,-361])))
+  rmse <- postResample(predicted,testY)
+  learncurve$cvRMSE[i] <- rmse[1]
+  
+}
+
+pdf("Learningcurve.pdf",width = 7 , height = 7 , pointsize=12)
+plot(log(learncurve$trainRMSE),type= "o", col = "red" , xlab = "Training set size" ,
+     ylab = "Error (RMSE)" , main = "Linear Model Learning Curve")
+lines(log(learncurve$cvRMSE),type="o" , col = "blue")
+legend('topright' , c("Train Error","Test Error"), lty = c(1,1) , lwd = c(2.5,2.5), col = c("red","blue"))
+dev.off()
+
+#plot xg boost importance 
+xgb.plot_importance(xgbFit,max_num_features=50 , height = 0.8 , ax=ax)
+xgboost::xgb.importance(model = xgbFit)
+pdf("importance.pdf",width = 7 , height = 7 , pointsize=12)
+xgb.ggplot.importance(xgb.importance(model=xgbFit))
+dev.off()
+
+```
